@@ -512,7 +512,80 @@ beta = 0.1 (default):      balanced → learns preferences, preserves SFT founda
 ---
 
 ## Code Written So Far
-_None yet — starting with src/data.py_
+
+### `src/data.py` ✅ Complete and tested
+- `format_prompt(question, schema)` — prompt only, imported everywhere
+- `format_example(row)` — returns `{"text": prompt + answer}` for HuggingFace map
+- `load_splits()` — loads, shuffles (seed=42), maps, splits into train/sft_eval/held_out
+- `check_contamination(splits)` — asserts no answer overlap between train/sft_eval and held_out
+- `if __name__ == "__main__"` — runs contamination check + prints split sizes
+- **Tested and passing** — 70,200 / 5,000 / 2,800 examples, contamination check passed
+
+### `src/evaluate.py` ✅ Complete
+- `evaluate_model(model, tokenizer, dataset, n=500) -> float`
+- Full flow per example:
+  1. `format_prompt(question, schema)` → feed to model
+  2. `tokenizer(prompt).to(model.device)` → model.generate() → decode → extract SQL after `### Answer\n`
+  3. `sqlite3.connect(':memory:')` → load schema → run pred SQL + true SQL → compare result sets
+  4. Match = correct += 1
+  5. Return correct/n
+
+**Key concepts from evaluate.py:**
+
+**Model vs Tokenizer:**
+- Model = neural network, outputs token IDs (numbers)
+- Tokenizer = converts text → token IDs (input) and token IDs → text (output)
+- Both needed: tokenizer encodes prompt → model generates → tokenizer decodes back to SQL
+
+**`.to(model.device)`:**
+- Model lives on GPU, inputs must be on same device
+- CPU tensor + GPU model = crash
+
+**`do_sample=False` (greedy decoding):**
+- Sampling = random token selection → different output every run → accuracy changes every eval
+- Greedy = always highest probability token → deterministic → reproducible accuracy numbers
+- Always use greedy for evaluation, sampling is for production serving
+
+**`max_new_tokens=128`:**
+- SQL queries are short (~10-30 tokens). 128 is generous headroom.
+- Larger = slower inference for no gain
+
+**`dataset.select(range(n))` vs `dataset[:n]`:**
+- `[:n]` returns plain Python dict — loses HuggingFace Dataset features
+- `.select(range(n))` returns proper Dataset object — always use HuggingFace methods
+
+**`set()` on result rows:**
+- SQL can return rows in any order — list comparison is order-sensitive
+- `set()` makes comparison order-independent — only content matters
+- `[(1,),(2,)]` == `[(2,),(1,)]` as sets ✅
+
+**`executescript` vs `execute`:**
+- `conn.executescript(sql)` — runs multiple SQL statements at once, used to load the schema (multiple CREATE TABLE statements)
+- `conn.execute(sql)` — runs one SQL statement, used to query the database, returns cursor with `.fetchall()`
+```python
+conn.executescript(row["context"])       # CREATE TABLE singer; CREATE TABLE album; ...
+conn.execute(pred_sql).fetchall()        # SELECT count(*) FROM singer → [(5,)]
+```
+
+**`tqdm` parameters:**
+- `desc="Evaluating"` — label shown on progress bar in terminal
+- `total=n` — tells tqdm how many items to expect so it can show percentage and ETA
+- `range(n)` — list of indices [0,1,2...499] passed to `dataset.select()`
+
+**Concrete example of why set() matters:**
+```
+True SQL:  SELECT name FROM singer ORDER BY age → [("Taylor",), ("Ed",), ("Adele",)]
+Pred SQL:  SELECT name FROM singer              → [("Adele",), ("Taylor",), ("Ed",)]
+
+As lists: False ❌ — would wrongly count as incorrect
+As sets:  True  ✅ — correctly counts as correct (same data, different order)
+```
+The model got the right rows — ORDER BY doesn't affect correctness for this task.
+
+**`try/except/finally`:**
+- `try` — model may generate invalid SQL (syntax errors, wrong table names) → would crash
+- `except` — catch any exception, count as wrong (pass), continue to next example
+- `finally` — ALWAYS closes connection, even if exception raised — prevents memory leaks across 500 examples
 
 ---
 
