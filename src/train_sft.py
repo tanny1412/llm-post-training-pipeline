@@ -63,7 +63,7 @@ if __name__ == "__main__":
     with mlflow.start_run(run_name="qlora-sft"):
         trainer = SFTTrainer(
             model=model,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
             train_dataset=splits["train"],
             eval_dataset=splits["sft_eval"],
             args=sft_config,
