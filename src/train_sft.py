@@ -2,7 +2,8 @@ import torch
 import mlflow
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, SFTConfig
+from trl.trainer import DataCollatorForCompletionOnlyLM
 
 from src.data import load_splits
 from src.evaluate import evaluate_model
