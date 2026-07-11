@@ -5,7 +5,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from src.data import load_splits
 from src.evaluate import evaluate_model
 
-MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 
 def load_base_model():
