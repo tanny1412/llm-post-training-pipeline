@@ -53,7 +53,7 @@ if __name__ == "__main__":
         save_steps=500,
         eval_strategy="steps",
         eval_steps=500,
-        max_seq_length=512,
+        max_length=512,
         completion_only_loss=True,
         report_to="none",
     )
