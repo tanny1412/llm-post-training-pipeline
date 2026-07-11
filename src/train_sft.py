@@ -3,7 +3,6 @@ import mlflow
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, SFTConfig
-from trl.trainer import DataCollatorForCompletionOnlyLM
 
 from src.data import load_splits
 from src.evaluate import evaluate_model
@@ -62,16 +61,11 @@ if __name__ == "__main__":
     mlflow.set_experiment("sql-post-training")
 
     with mlflow.start_run(run_name="qlora-sft"):
-        collator = DataCollatorForCompletionOnlyLM(
-            response_template="### Answer\n",
-            tokenizer=tokenizer,
-        )
         trainer = SFTTrainer(
             model=model,
             tokenizer=tokenizer,
             train_dataset=splits["train"],
             eval_dataset=splits["sft_eval"],
-            data_collator=collator,
             args=sft_config,
         )
         trainer.train()
