@@ -54,7 +54,7 @@ if __name__ == "__main__":
         eval_strategy="steps",
         eval_steps=500,
         max_seq_length=512,
-        dataset_text_field="text",
+        completion_only_loss=True,
         report_to="none",
     )
 

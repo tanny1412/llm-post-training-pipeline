@@ -11,7 +11,11 @@ def format_prompt(question: str, schema: str) -> str:
 
 
 def format_example(row: dict) -> dict:
-    return {"text": format_prompt(row["question"], row["context"]) + row["answer"]}
+    return {
+        "text":       format_prompt(row["question"], row["context"]) + row["answer"],
+        "prompt":     format_prompt(row["question"], row["context"]),
+        "completion": row["answer"],
+    }
 
 
 def load_splits() -> dict:
