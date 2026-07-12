@@ -12,7 +12,7 @@ Fine-tuning Llama-3.1-8B-Instruct for SQL generation using a full post-training 
 | Stage | Execution Accuracy | Notes |
 |---|---|---|
 | Baseline (no fine-tuning) | 1.6% | Zero-shot on custom prompt format |
-| + QLoRA SFT | TBD | 3 epochs, 70K examples |
+| + QLoRA SFT | **95.8%** | 3 epochs, 70K examples, 4h41m on RTX 5090 |
 | + DPO Alignment | TBD | Self-generated preference pairs |
 | + AWQ Quantization | TBD | Target <1pp accuracy drop |
 
