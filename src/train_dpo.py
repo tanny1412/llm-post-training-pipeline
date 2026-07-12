@@ -1,3 +1,5 @@
+import json
+import os
 import torch
 import mlflow
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -7,6 +9,8 @@ from tqdm import tqdm
 
 from src.data import load_splits, format_prompt
 from src.evaluate import evaluate_model
+
+DPO_PAIRS_CACHE = "checkpoints/dpo_pairs.json"
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 SFT_ADAPTER_PATH = "checkpoints/sft-adapter"
@@ -51,9 +55,19 @@ if __name__ == "__main__":
     splits = load_splits()
     model, tokenizer = load_merged_sft_model()
 
-    print("Building DPO preference pairs from SFT failures...")
-    preference_pairs = build_dpo_dataset(model, tokenizer, splits["sft_eval"])
-    print(f"Built {len(preference_pairs)} preference pairs")
+    if os.path.exists(DPO_PAIRS_CACHE):
+        print(f"Loading cached DPO pairs from {DPO_PAIRS_CACHE}...")
+        with open(DPO_PAIRS_CACHE) as f:
+            preference_pairs = json.load(f)
+        print(f"Loaded {len(preference_pairs)} preference pairs")
+    else:
+        print("Building DPO preference pairs from SFT failures...")
+        preference_pairs = build_dpo_dataset(model, tokenizer, splits["sft_eval"])
+        print(f"Built {len(preference_pairs)} preference pairs")
+        os.makedirs("checkpoints", exist_ok=True)
+        with open(DPO_PAIRS_CACHE, "w") as f:
+            json.dump(preference_pairs, f)
+        print(f"Cached to {DPO_PAIRS_CACHE}")
 
     lora_config = LoraConfig(
         r=16,
