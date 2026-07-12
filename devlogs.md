@@ -513,6 +513,68 @@ beta = 0.1 (default):      balanced → learns preferences, preserves SFT founda
 
 ## Code Written So Far
 
+### `src/train_sft.py` 🔨 In Progress
+
+**What SFTTrainer handles vs raw PyTorch loop:**
+- Training loop (forward, loss, backward, optimizer step)
+- Gradient accumulation — simulates larger batch size
+- Evaluation loop on sft_eval at regular intervals
+- Checkpoint saving every N steps
+- Logging — loss, learning rate, grad norm
+- Mixed precision — bf16 automatically
+- Instruction masking — loss only on answer tokens, not prompt
+
+**New imports vs baseline.py:**
+- `peft` — creates and manages LoRA adapters. `LoraConfig` defines settings, `get_peft_model` attaches to model
+- `trl` — HuggingFace library with SFTTrainer and DPOTrainer. `SFTConfig` is training configuration
+- `peft` is separate from `transformers` by design — keeps transformers clean, peft can add new techniques without touching transformers
+
+**LoraConfig parameters:**
+- `r=16` — rank. Higher r = more trainable params per layer, more capacity, more VRAM
+  - r=8: 65K params/layer, r=16: 131K params/layer, r=64: 524K params/layer
+  - For SQL: r=16 is sweet spot
+- `lora_alpha=32` — scale = alpha/r = 2.0. Higher alpha = stronger adapter signal
+  - Rule: alpha = 2r always. If r changes, change alpha proportionally
+- `target_modules` — q,k,v,o projections only. SQL is a routing problem (attention), not a knowledge problem (MLP)
+- `lora_dropout=0.05` — randomly zeros 5% of adapter weights during training to prevent overfitting. Disabled at inference automatically
+- `task_type="CAUSAL_LM"` — peft supports multiple task types (SEQ2SEQ, CLS etc). Must specify for correct adapter structure
+
+**`get_peft_model(model, lora_config)`:**
+- Attaches LoRA adapters to target projection layers
+- After this: base weights frozen (4-bit), adapter weights trainable (bfloat16)
+- `model.print_trainable_parameters()` → ~0.78% trainable
+
+**SFTConfig parameters:**
+- `per_device_train_batch_size=4` + `gradient_accumulation_steps=4` → effective batch size 16
+- Gradient accumulation: accumulate gradients over 4 batches before weight update. Same math as batch=16, fraction of VRAM
+- `eval_strategy="steps"` + `eval_steps=500` → eval loss logged every 500 steps DURING training (catches overfitting early)
+- `dataset_text_field="text"` → tells SFTTrainer which column to use
+- `report_to="none"` → don't send to W&B, we use MLflow ourselves
+- One step = one forward pass on one batch (4 examples). 70,200/4 = 17,550 steps per epoch
+
+**Two separate saves:**
+```
+checkpoints/sft/           ← intermediate checkpoints every 500 steps (recovery)
+checkpoints/sft-adapter/   ← final clean adapter after training (~80MB, what DPO uses)
+```
+
+**Instruction masking via DataCollatorForCompletionOnlyLM:**
+- Finds `### Answer\n` in each example
+- Sets all token labels BEFORE it to `-100`
+- PyTorch cross-entropy ignores `-100` labels → loss only computed on SQL answer tokens
+- Without this: model also optimizes for predicting the question/schema → wrong objective
+
+**🎤 Interview-ready answer for instruction masking:**
+> "SFTTrainer does instruction masking via DataCollatorForCompletionOnlyLM. It finds the `### Answer\n` response template and sets all token labels before it to -100. PyTorch's cross-entropy loss ignores -100 tokens, so loss is only computed on SQL answer tokens — not the question or schema."
+
+**The 4 dataset columns and where each is used:**
+```
+question → format_prompt() — builds the prompt
+context  → format_prompt() + evaluate.py — builds prompt + loads SQLite schema  
+answer   → evaluate.py — ground truth SQL + contamination check
+text     → SFTTrainer — full formatted training example (question+context+answer combined)
+```
+
 ### `src/data.py` ✅ Complete and tested
 - `format_prompt(question, schema)` — prompt only, imported everywhere
 - `format_example(row)` — returns `{"text": prompt + answer}` for HuggingFace map
@@ -520,6 +582,52 @@ beta = 0.1 (default):      balanced → learns preferences, preserves SFT founda
 - `check_contamination(splits)` — asserts no answer overlap between train/sft_eval and held_out
 - `if __name__ == "__main__"` — runs contamination check + prints split sizes
 - **Tested and passing** — 70,200 / 5,000 / 2,800 examples, contamination check passed
+
+### `src/baseline.py` ✅ Complete
+
+**What it does:**
+1. Loads Llama-3.2-3B-Instruct in 4-bit NF4 via `BitsAndBytesConfig`
+2. Runs `evaluate_model()` on `held_out` (2,800 examples, n=500)
+3. Logs accuracy + params to MLflow under experiment `"sql-post-training"`
+
+**Key concepts learned:**
+
+**`BitsAndBytesConfig` parameters:**
+- `bnb_4bit_quant_type="nf4"` → how weights are STORED (4-bit NF4)
+- `bnb_4bit_compute_dtype=torch.bfloat16` → dequantize to bfloat16 during computation
+- `bnb_4bit_use_double_quant=True` → quantize the scale constants themselves (~47MB saved)
+- Scale constants are needed for dequantization: `real_weight = nf4_index × scale`
+
+**`device_map="auto"`:**
+- HuggingFace automatically places model on GPU if available
+- Falls back to CPU if no GPU, splits across multiple GPUs if model too large
+- No manual `.to("cuda")` needed — works on any machine
+
+**`tokenizer.pad_token = tokenizer.eos_token`:**
+- Llama has no dedicated pad token — designed for single sequence inference
+- Padding needed during batch training to match sequence lengths
+- Reuse EOS token (`</s>`) as pad token — model learns to ignore padded positions via attention mask
+
+**MLflow — why `with mlflow.start_run()`:**
+- Context manager automatically closes the run even if code crashes
+- Without it: crash mid-run → run stays open forever
+- `set_experiment()` groups all runs under one project name
+- `log_metric()` saves numbers (accuracy), `log_param()` saves settings (stage, model_id)
+
+**Which eval set at each stage:**
+```
+baseline.py  → held_out   ← honest "before" number
+train_sft.py → sft_eval   ← hyperparameter decisions + DPO pair generation
+train_dpo.py → held_out   ← honest "after DPO" number
+quantize.py  → held_out   ← confirm <1% accuracy drop after AWQ
+```
+held_out touched exactly 3 times. SFT never touches it.
+
+**Why SFT accuracy (72%) isn't directly comparable to DPO accuracy (79%):**
+- SFT measured on sft_eval, DPO measured on held_out — different sets
+- Honest comparison: baseline (18%) vs DPO (79%) on same held_out set
+
+---
 
 ### `src/evaluate.py` ✅ Complete
 - `evaluate_model(model, tokenizer, dataset, n=500) -> float`
@@ -732,3 +840,84 @@ if __name__ == "__main__": # only runs as script
 | SFT train | 70,200 | Train the SFT model | No |
 | SFT eval | 5,000 | Measure SFT accuracy + generate DPO pairs from failures | Yes — source of rejected examples. Cannot use for final eval |
 | Held-out test | 2,800 | Final honest evaluation of all stages | Never touched until the end |
+
+---
+
+## Session 2 — July 11, 2026 — Training Observations & Infrastructure
+
+---
+
+### Token Accuracy vs Execution Accuracy During Training
+
+**Question:** What is the execution accuracy right now during SFT training?
+
+**Answer:** Execution accuracy is NOT measured during training. What SFTTrainer logs is token accuracy.
+
+```
+Token accuracy:     "did you predict SELECT correctly?"    → 85% during training
+Execution accuracy: "did the full query return correct rows?" → unknown until training ends
+```
+
+Token accuracy = per-token next-token-prediction correctness, logged automatically every N steps.
+Execution accuracy = run generated SQL against SQLite, compare result sets. Expensive — only measured once after training completes via `evaluate_model()`.
+
+The ~85% token accuracy during SFT epoch 1 is a good sign but doesn't directly translate to execution accuracy — a single wrong token can make a syntactically valid but logically wrong query.
+
+**🎤 Interview-ready answer:**
+> "During SFT training, what gets logged is token accuracy — per-token prediction correctness on the completion side. Execution accuracy requires actually running the generated SQL against a database and checking result sets. That's too expensive to compute every few hundred steps, so we measure it once after training using a separate evaluator. 85% token accuracy during epoch 1 is a healthy signal, but the real number only comes after training completes."
+
+---
+
+### The Baseline Measurement Is Flawed — And Why That's Worth Knowing
+
+**Question:** Isn't 1.6% baseline a bad way to measure baseline?
+
+**Answer:** Yes — it's a confounder. We measured the model on our custom `### Task / ### Schema / ### Answer` format that it had never seen. So the 1.6% is measuring TWO things at once:
+
+1. Can the model write SQL? (it can — Llama-3.1-8B knows SQL)
+2. Does the model know our prompt format? (it doesn't — never seen it)
+
+A fairer baseline would use the model's native instruction format:
+```
+[INST] Generate SQL for: {question}\nSchema: {schema} [/INST]
+```
+That would give ~40-60% instead of 1.6% — closer to the model's true SQL capability.
+
+**Why we did it this way anyway:** The question we care about is "does SFT on our format improve performance on our format?" — and 1.6% → ~70% is a clear, dramatic story for a portfolio project.
+
+**🎤 Interview-ready answer:**
+> "The 1.6% baseline is conservative — it includes format unfamiliarity as a confounder. The model had never seen our `### Answer` delimiter, so it failed not because it can't write SQL, but because it didn't know our prompt format. A fairer baseline would test using the model's native chat template, which would likely yield 40-60%. For the pipeline story, what matters is that SFT on our format dramatically improves performance on our format — but in a rigorous evaluation, I'd report both numbers."
+
+---
+
+### RunPod Infrastructure — What Each Metric Means
+
+**Observed during SFT training on RTX 5090:**
+
+| Metric | Value | What It Means |
+|---|---|---|
+| GPU utilization | ~70% | GPU computing ~70% of the time. 30% waiting on data loading. Healthy. |
+| GPU VRAM | 10.4GB / 32GB (30%) | Model + adapters + activations + optimizer. Lots of headroom. |
+| CPU utilization | 2% | Expected. Dataset pre-tokenized, CPU just moves tensors. |
+| System RAM | 17GB / 87GB (20%) | Dataset in memory + Python process + tokenizer. |
+| Container disk | 11GB / 30GB | Code + venv + packages. Model weights NOT here. |
+| Network volume | 24GB / 50GB | HuggingFace cache — model weights (16GB) + dataset cache. |
+
+**Why CPU is only 2% during GPU training:**
+- Dataset was pre-tokenized via `dataset.map(format_example)` before training
+- During training, CPU's only job is moving already-tokenized batches to GPU
+- Almost all computation is matrix multiplication on GPU
+- 2% is exactly what you'd expect
+
+**Container disk vs Network volume — the distinction:**
+- **Container disk** = working environment (code, venv, packages). Lost when pod is deleted.
+- **Network volume** = persistent heavy storage (HuggingFace model cache, dataset cache). Survives pod deletion.
+- When pod restarts: packages reinstall to container disk, but 16GB model doesn't re-download because it's already on the network volume.
+
+**Why GPU utilization is 70% and not 95%+:**
+- Data loading happens in parallel with GPU compute — brief stalls between batches
+- Could improve with `dataloader_num_workers=4` in SFTConfig
+- Not worth changing mid-run. 70% sustained is acceptable for a single-GPU training run.
+
+**🎤 Interview-ready answer:**
+> "During SFT training the GPU ran at ~70% utilization with 30% VRAM used — the model fit comfortably with room to spare. CPU was at 2% because the dataset was pre-tokenized via HuggingFace map before training started, so the CPU's only job was transferring batches to the GPU. The 30% idle time on GPU was data loading latency — fixable with more dataloader workers, but not worth interrupting a running training job."
