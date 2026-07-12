@@ -3,6 +3,7 @@ import mlflow
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model, PeftModel
 from trl import DPOTrainer, DPOConfig
+from tqdm import tqdm
 
 from src.data import load_splits, format_prompt
 from src.evaluate import evaluate_model
@@ -29,7 +30,7 @@ def load_merged_sft_model():
 def build_dpo_dataset(model, tokenizer, sft_eval):
     preference_pairs = []
 
-    for row in sft_eval:
+    for row in tqdm(sft_eval, desc="Building DPO pairs"):
         prompt = format_prompt(row["question"], row["context"])
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         outputs = model.generate(**inputs, max_new_tokens=128, do_sample=False)
