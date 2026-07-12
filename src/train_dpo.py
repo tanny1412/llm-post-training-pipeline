@@ -85,7 +85,7 @@ if __name__ == "__main__":
             ref_model=None,
             args=dpo_config,
             train_dataset=preference_pairs,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
         )
         trainer.train()
 
