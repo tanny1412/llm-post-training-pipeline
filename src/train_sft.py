@@ -43,7 +43,7 @@ if __name__ == "__main__":
     model, tokenizer = load_model_with_lora()
 
     sft_config = SFTConfig(
-        output_dir="checkpoints/sft",
+        output_dir="/workspace/checkpoints/sft",
         num_train_epochs=3,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         mlflow.log_param("epochs", 3)
         mlflow.log_param("learning_rate", 2e-4)
 
-        model.save_pretrained("checkpoints/sft-adapter")
-        tokenizer.save_pretrained("checkpoints/sft-adapter")
+        model.save_pretrained("/workspace/checkpoints/sft-adapter")
+        tokenizer.save_pretrained("/workspace/checkpoints/sft-adapter")
 
         print(f"SFT execution accuracy: {acc:.4f}")

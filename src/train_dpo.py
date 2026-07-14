@@ -10,10 +10,10 @@ from tqdm import tqdm
 from src.data import load_splits, format_prompt
 from src.evaluate import evaluate_model
 
-DPO_PAIRS_CACHE = "checkpoints/dpo_pairs.json"
+DPO_PAIRS_CACHE = "/workspace/checkpoints/dpo_pairs.json"
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-SFT_ADAPTER_PATH = "checkpoints/sft-adapter"
+SFT_ADAPTER_PATH = "/workspace/checkpoints/sft-adapter"
 
 
 def load_merged_sft_model():
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     model = get_peft_model(model, lora_config)
 
     dpo_config = DPOConfig(
-        output_dir="checkpoints/dpo",
+        output_dir="/workspace/checkpoints/dpo",
         num_train_epochs=1,
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
@@ -104,8 +104,8 @@ if __name__ == "__main__":
         trainer.train()
 
         model = model.merge_and_unload()
-        model.save_pretrained("checkpoints/dpo-merged")
-        tokenizer.save_pretrained("checkpoints/dpo-merged")
+        model.save_pretrained("/workspace/checkpoints/dpo-merged")
+        tokenizer.save_pretrained("/workspace/checkpoints/dpo-merged")
 
         acc = evaluate_model(model, tokenizer, splits["held_out"], n=500)
 
